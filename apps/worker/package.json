@@ -1,0 +1,34 @@
+{
+  "name": "@me3-core/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm db:migrate:local && wrangler dev --config wrangler.core.example.toml --port 8787",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply me3-core-db --local --config wrangler.core.example.toml"
+  },
+  "dependencies": {
+    "@me3-core/assistant-jobs": "workspace:*",
+    "@me3-core/plugin-agent-chat": "workspace:*",
+    "@me3-core/plugin-calendar": "workspace:*",
+    "@me3-core/plugin-journal": "workspace:*",
+    "@me3-core/plugin-landing-pages": "workspace:*",
+    "@me3-core/plugin-local-executor": "workspace:*",
+    "@me3-core/plugin-mission-control": "workspace:*",
+    "@me3-core/plugin-social-publishing": "workspace:*",
+    "@me3-core/plugin-telegram": "workspace:*",
+    "@me3/knowledge": "workspace:*",
+    "hono": "^4.12.26",
+    "ical.js": "^2.2.1",
+    "stripe": "^17.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260620.1",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.103.0"
+  }
+}

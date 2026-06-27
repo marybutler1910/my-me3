@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.wrangler/
+
+# Environment
+.env
+.env.local
+.dev.vars
+
+# Local issue tracker state
+.beads/
+
+# Logs
+*.log
+logs/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# Tests
+coverage/
+test-results/
+playwright-report/
+.playwright-mcp/
+
+# Local-only repository metadata
+.gitattributes
+AGENTS.md
+
+# Local-only development docs
+/dev-docs/

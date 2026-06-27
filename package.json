@@ -1,0 +1,59 @@
+{
+  "name": "my-me3",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Personal OS and AI assistant",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @me3-core/worker --filter @me3/web dev",
+    "dev:worker": "pnpm --filter @me3-core/worker dev",
+    "dev:web": "pnpm --filter @me3/web dev",
+    "init:cloudflare": "node scripts/init-cloudflare.mjs",
+    "uninstall:cloudflare": "node scripts/uninstall-cloudflare.mjs",
+    "destroy:cloudflare": "node scripts/uninstall-cloudflare.mjs",
+    "generate:llms": "node scripts/generate-llms.mjs",
+    "update:check": "node scripts/check-updates.mjs",
+    "update:core": "node scripts/update-core.mjs",
+    "update:doctor": "node scripts/update-doctor.mjs",
+    "deploy:prepare": "node scripts/prepare-cloudflare-deploy.mjs",
+    "setup:dev-vars": "node scripts/create-dev-vars.mjs",
+    "storage:r2:provision": "node scripts/provision-r2.mjs",
+    "verify:local-boot": "node scripts/verify-local-boot.mjs",
+    "build": "pnpm generate:llms && pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrations:apply": "wrangler d1 migrations apply DB --remote --config wrangler.toml",
+    "deploy": "pnpm db:migrations:apply && wrangler deploy --config wrangler.toml",
+    "deploy:cloudflare": "pnpm deploy:prepare && pnpm build && pnpm db:migrations:apply && wrangler deploy --config wrangler.toml",
+    "deploy:cloudflare:d1-only": "pnpm deploy:prepare -- --skip-r2 && pnpm build && pnpm db:migrations:apply && wrangler deploy --config wrangler.toml"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "ME3 stores owner data, settings, jobs, and plugin state here. Use + Create new for a new install; Cloudflare provisions the D1 database automatically."
+      },
+      "ME3_USER_AGENT": {
+        "description": "Durable Object state for ME3's owner agent runtime. Cloudflare provisions this automatically."
+      },
+      "SITE_ASSETS": {
+        "description": "R2 storage needs to be activated to proceed. [Activate R2 storage](https://dash.cloudflare.com/?to=/:account/r2/plans)."
+      },
+      "AI": {
+        "description": "Workers AI binding used by ME3's default assistant and voice features. You can add other model providers inside ME3 later."
+      }
+    }
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "wrangler": "^4.103.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "js-cookie": "3.0.8"
+    }
+  }
+}

@@ -1,0 +1,389 @@
+import { sendEmailWithProvider } from "./email-providers";
+import type { DbBooking, Env } from "./types";
+
+type SendStatus = "sent" | "failed" | "skipped";
+
+export type TransactionalEmailResult = {
+  status: SendStatus;
+  to?: string;
+  providerMessageId?: string | null;
+  error?: string;
+};
+
+export type BookingEmailDetails = {
+  ownerId: string;
+  hostName: string;
+  hostEmail?: string | null;
+  siteName?: string | null;
+  guestName: string;
+  guestEmail: string;
+  bookingTitle: string;
+  startsAt: string;
+  durationMinutes: number;
+  timezone: string;
+  notes?: string | null;
+  bookingId?: string | null;
+  amountPaid?: number | null;
+  currency?: string | null;
+  guestMessageText?: string | null;
+  sendHostCopy?: boolean;
+  test?: boolean;
+};
+
+export type ProductPurchaseEmailDetails = {
+  ownerId: string;
+  hostName: string;
+  hostEmail?: string | null;
+  buyerName: string;
+  buyerEmail: string;
+  productTitle: string;
+  subject: string;
+  messageText: string;
+  test?: boolean;
+};
+
+export async function sendBookingConfirmationEmails(
+  env: Env,
+  details: BookingEmailDetails,
+): Promise<{ guest: TransactionalEmailResult; host: TransactionalEmailResult }> {
+  const guest = await sendGuestBookingConfirmationEmail(env, details);
+  const host =
+    details.sendHostCopy === false
+      ? ({ status: "skipped", error: "Host copy is disabled" } satisfies TransactionalEmailResult)
+      : details.hostEmail
+        ? await sendHostBookingConfirmationEmail(env, details)
+        : ({ status: "skipped", error: "Host email is not configured" } satisfies TransactionalEmailResult);
+  return { guest, host };
+}
+
+export async function sendGuestBookingConfirmationEmail(
+  env: Env,
+  details: BookingEmailDetails,
+): Promise<TransactionalEmailResult> {
+  const startTime = formatBookingTime(details.startsAt, details.timezone);
+  const paymentLine = formatPaymentLine(details.amountPaid, details.currency);
+  const calendarUrl = googleCalendarUrl(details);
+  const guestMessage = applyBookingEmailTokens(details.guestMessageText || "", {
+    guestName: details.guestName,
+    guestEmail: details.guestEmail,
+    bookingTitle: details.bookingTitle,
+    bookingTime: startTime,
+    siteName: details.siteName || details.hostName,
+    hostName: details.hostName,
+    hostEmail: details.hostEmail || "",
+  }).trim();
+  const subject = `${details.test ? "[Test] " : ""}Booking confirmed: ${details.bookingTitle}`;
+  const textBody = `Hi ${details.guestName},
+
+Your booking is confirmed.
+
+${details.bookingTitle} with ${details.hostName}
+${startTime}
+Duration: ${details.durationMinutes} minutes${paymentLine ? `\n${paymentLine}` : ""}${details.notes ? `\n\nYour notes:\n${details.notes}` : ""}
+Add to Google Calendar: ${calendarUrl}
+${guestMessage ? `\n\n${guestMessage}` : ""}
+
+You can reply to this email to contact ${details.hostName}.
+
+- ${details.hostName}`;
+  const htmlBody = bookingEmailHtml({
+    title: "Booking confirmed",
+    subtitle: "Your meeting is scheduled",
+    rows: [
+      ["With", details.hostName],
+      ["When", startTime],
+      ["Duration", `${details.durationMinutes} minutes`],
+      ...(paymentLine ? [["Payment", paymentLine.replace(/^Payment: /, "")] as [string, string]] : []),
+    ],
+    notesLabel: "Your notes",
+    notes: details.notes,
+    calendarUrl,
+    message: guestMessage,
+    footer: `Reply to this email to contact ${escapeHtml(details.hostName)}.`,
+  });
+
+  return sendWorkflowEmail(env, details.ownerId, {
+    toAddress: details.guestEmail,
+    subject,
+    textBody,
+    htmlBody,
+    fromName: details.hostName,
+    replyToAddress: details.hostEmail || null,
+    metadata: {
+      booking_id: details.bookingId,
+      booking_email: "guest_confirmation",
+      test: details.test || false,
+    },
+  });
+}
+
+export async function sendHostBookingConfirmationEmail(
+  env: Env,
+  details: BookingEmailDetails,
+): Promise<TransactionalEmailResult> {
+  if (!details.hostEmail) return { status: "skipped", error: "Host email is not configured" };
+
+  const startTime = formatBookingTime(details.startsAt, details.timezone);
+  const paymentLine = formatPaymentLine(details.amountPaid, details.currency);
+  const subject = `${details.test ? "[Test] " : ""}New booking: ${details.guestName}`;
+  const textBody = `Hi ${details.hostName},
+
+You have a new booking.
+
+Guest: ${details.guestName}
+Email: ${details.guestEmail}
+
+${details.bookingTitle}
+${startTime}
+Duration: ${details.durationMinutes} minutes${paymentLine ? `\n${paymentLine}` : ""}${details.notes ? `\n\nGuest notes:\n${details.notes}` : ""}
+
+- ME3 Core`;
+  const htmlBody = bookingEmailHtml({
+    title: "New booking",
+    subtitle: "You have a new appointment",
+    rows: [
+      ["Guest", details.guestName],
+      ["Email", details.guestEmail],
+      ["When", startTime],
+      ["Duration", `${details.durationMinutes} minutes`],
+      ...(paymentLine ? [["Payment", paymentLine.replace(/^Payment: /, "")] as [string, string]] : []),
+    ],
+    notesLabel: "Guest notes",
+    notes: details.notes,
+    footer: "Open ME3 Calendar to manage this booking.",
+  });
+
+  return sendWorkflowEmail(env, details.ownerId, {
+    toAddress: details.hostEmail,
+    subject,
+    textBody,
+    htmlBody,
+    fromName: "ME3 Core",
+    replyToAddress: details.guestEmail,
+    metadata: {
+      booking_id: details.bookingId,
+      booking_email: "host_confirmation",
+      test: details.test || false,
+    },
+  });
+}
+
+export async function sendProductPurchaseConfirmationEmail(
+  env: Env,
+  details: ProductPurchaseEmailDetails,
+): Promise<TransactionalEmailResult> {
+  const subject = `${details.test ? "[Test] " : ""}${details.subject}`;
+  const textBody = `${details.messageText}
+
+---
+
+${details.productTitle}
+You can reply to this email to contact ${details.hostName}.`;
+  const htmlBody = productEmailHtml(details);
+
+  return sendWorkflowEmail(env, details.ownerId, {
+    toAddress: details.buyerEmail,
+    subject,
+    textBody,
+    htmlBody,
+    fromName: details.hostName,
+    replyToAddress: details.hostEmail || null,
+    metadata: {
+      product_title: details.productTitle,
+      product_email: "purchase_confirmation",
+      test: details.test || false,
+    },
+  });
+}
+
+export async function getOwnerContact(
+  env: Env,
+  ownerId: string,
+): Promise<{ name: string | null; email: string | null }> {
+  const owner = await env.DB.prepare("SELECT name, email FROM owner_profile WHERE id = ?")
+    .bind(ownerId)
+    .first<{ name: string | null; email: string | null }>();
+  return { name: owner?.name || null, email: owner?.email || null };
+}
+
+export function bookingDetailsFromBooking(input: {
+  booking: DbBooking;
+  ownerId: string;
+  hostName: string;
+  hostEmail?: string | null;
+  siteName?: string | null;
+  bookingTitle: string;
+  timezone: string;
+  guestMessageText?: string | null;
+  sendHostCopy?: boolean;
+  test?: boolean;
+}): BookingEmailDetails {
+  return {
+    ownerId: input.ownerId,
+    hostName: input.hostName,
+    hostEmail: input.hostEmail || null,
+    siteName: input.siteName || input.hostName,
+    guestName: input.booking.guest_name,
+    guestEmail: input.booking.guest_email,
+    bookingTitle: input.bookingTitle,
+    startsAt: input.booking.starts_at,
+    durationMinutes: input.booking.duration_minutes,
+    timezone: input.timezone,
+    notes: input.booking.notes,
+    bookingId: input.booking.id,
+    amountPaid: input.booking.amount_paid,
+    currency: input.booking.currency,
+    guestMessageText: input.guestMessageText || null,
+    sendHostCopy: input.sendHostCopy,
+    test: input.test,
+  };
+}
+
+async function sendWorkflowEmail(
+  env: Env,
+  ownerId: string,
+  input: {
+    toAddress: string;
+    subject: string;
+    textBody: string;
+    htmlBody: string;
+    fromName: string;
+    replyToAddress?: string | null;
+    metadata: Record<string, unknown>;
+  },
+): Promise<TransactionalEmailResult> {
+  try {
+    const result = await sendEmailWithProvider(env, ownerId, {
+      purpose: "workflow",
+      fromName: input.fromName,
+      replyToAddress: input.replyToAddress || undefined,
+      toAddress: input.toAddress,
+      subject: input.subject,
+      textBody: input.textBody,
+      htmlBody: input.htmlBody,
+      metadata: input.metadata,
+      createdBy: "system",
+    });
+    return {
+      status: "sent",
+      to: input.toAddress,
+      providerMessageId: result.providerMessageId,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Email failed to send";
+    return {
+      status: message.includes("not ready to send yet") ? "skipped" : "failed",
+      to: input.toAddress,
+      error: message,
+    };
+  }
+}
+
+function formatBookingTime(value: string, timezone: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "full",
+    timeStyle: "short",
+    timeZone: timezone || "UTC",
+  }).format(date);
+}
+
+function formatPaymentLine(amountPaid: number | null | undefined, currency: string | null | undefined) {
+  if (!amountPaid || !currency) return "";
+  return `Payment: ${new Intl.NumberFormat("en", {
+    style: "currency",
+    currency: currency.toUpperCase(),
+  }).format(amountPaid / 100)}`;
+}
+
+function bookingEmailHtml(input: {
+  title: string;
+  subtitle: string;
+  rows: Array<[string, string]>;
+  notesLabel: string;
+  notes?: string | null;
+  calendarUrl?: string | null;
+  message?: string | null;
+  footer: string;
+}) {
+  const rows = input.rows
+    .map(
+      ([label, value]) =>
+        `<p style="margin:0 0 8px;color:#333;font-size:14px;"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>`,
+    )
+    .join("");
+  const notes = input.notes
+    ? `<p style="margin:16px 0 0;padding-top:16px;border-top:1px solid #e0e0e0;color:#666;font-size:14px;"><strong>${escapeHtml(input.notesLabel)}:</strong><br>${renderPlainText(input.notes)}</p>`
+    : "";
+  const calendarLink = input.calendarUrl
+    ? `<p style="margin:12px 0 0;color:#666;font-size:14px;"><a href="${escapeHtml(input.calendarUrl)}" style="color:#111;font-weight:700;">Add to Google Calendar</a></p>`
+    : "";
+  const message = input.message
+    ? `<div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:18px;margin:0 0 24px;color:#333;font-size:14px;line-height:1.6;">${renderPlainText(input.message)}</div>`
+    : "";
+
+  return emailShell(`
+    <h1 style="margin:0 0 8px;font-size:24px;color:#111;">${escapeHtml(input.title)}</h1>
+    <p style="margin:0 0 32px;color:#666;font-size:14px;">${escapeHtml(input.subtitle)}</p>
+    <div style="background:#f8f8f8;border-radius:8px;padding:24px;margin:0 0 24px;">${rows}${calendarLink}${notes}</div>
+    ${message}
+    <p style="margin:0;color:#666;font-size:14px;">${input.footer}</p>
+  `);
+}
+
+function googleCalendarUrl(details: BookingEmailDetails): string {
+  const start = new Date(details.startsAt);
+  const end = new Date(start.getTime() + details.durationMinutes * 60_000);
+  const dates = `${googleCalendarDate(start)}/${googleCalendarDate(end)}`;
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: `${details.bookingTitle} with ${details.hostName}`,
+    dates,
+    details: `Booking confirmed with ${details.hostName}.${details.hostEmail ? ` Reply to ${details.hostEmail} if you need to make changes.` : ""}`,
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function googleCalendarDate(date: Date): string {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function productEmailHtml(details: ProductPurchaseEmailDetails) {
+  return emailShell(`
+    <h1 style="margin:0 0 8px;font-size:24px;color:#111;">Purchase confirmed</h1>
+    <p style="margin:0 0 32px;color:#666;font-size:14px;">Thank you for your purchase</p>
+    <div style="background:#f8f8f8;border-radius:8px;padding:24px;margin:0 0 24px;">
+      <h2 style="margin:0 0 16px;font-size:18px;color:#111;">${escapeHtml(details.productTitle)}</h2>
+      <p style="margin:0;color:#333;font-size:14px;line-height:1.6;">${renderPlainText(details.messageText)}</p>
+    </div>
+    <p style="margin:0;color:#666;font-size:14px;">Reply to this email to contact <strong>${escapeHtml(details.hostName)}</strong>.</p>
+  `);
+}
+
+function emailShell(body: string) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:40px 20px;background:#f5f5f5;"><div style="max-width:500px;margin:0 auto;background:white;border-radius:12px;padding:40px;">${body}</div></body></html>`;
+}
+
+function renderPlainText(text: string) {
+  return escapeHtml(text).replace(/\n/g, "<br>");
+}
+
+function applyBookingEmailTokens(
+  template: string,
+  ctx: Record<string, string>,
+): string {
+  let output = template;
+  for (const [key, value] of Object.entries(ctx)) {
+    output = output.replace(new RegExp(`{{\\s*${key}\\s*}}`, "g"), () => value);
+  }
+  return output;
+}
+
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
